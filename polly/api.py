@@ -16,7 +16,8 @@ def create_payload(model, history, config_data):
     # Логика добавления Reasoning параметров только если это включено
     if config_data.get("reasoning", False):
         # 1. Для моделей Claude и Kimi (используют 'thinking')
-        if "claude" in model or "kimi" in model:
+        # Gemini тоже переходит на thinking, добавим его сюда
+        if any(x in model for x in ["claude", "kimi", "gemini"]):
             payload["thinking"] = {
                 "type": "enabled", 
                 "budget_tokens": config_data.get("budget_tokens", 4096)
@@ -25,13 +26,13 @@ def create_payload(model, history, config_data):
         # 2. Для моделей OpenAI o1/o3 (используют 'reasoning_effort')
         elif "o1" in model or "o3" in model:
             payload["reasoning_effort"] = config_data.get("reasoning_effort", "high")
+        
+        # 3. DeepSeek R1 обычно работает сам по себе, но если нужно принудить:
+        elif "deepseek" in model:
+            # Pollinations иногда игнорирует, но попробуем
+            pass 
             
-        # 3. DeepSeek R1 обычно работает сам по себе, но если Pollinations
-        # обновит API под него, настройки могут поменяться.
-    
     # ВАЖНО: Если reasoning выключен, мы НЕ добавляем поле "thinking" вообще.
-    # Отправка {"type": "disabled"} вызывает 500 ошибку на многих моделях.
-
     return payload
 
 def stream_completion(payload, api_key=None):
@@ -49,10 +50,9 @@ def stream_completion(payload, api_key=None):
                 error_msg = response.json()
                 print(f"API Error Details: {error_msg}")
             except:
-                pass # Если тело не JSON, просто пропустим
+                pass 
                 
         response.raise_for_status()
         return response
     except requests.exceptions.RequestException as e:
-        # Более понятный вывод ошибки
         raise Exception(f"Network Error ({e}) - Check parameters or model compatibility.")

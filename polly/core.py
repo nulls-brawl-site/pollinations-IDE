@@ -1,5 +1,5 @@
-# polly/core.py
 import json
+import os
 from rich.console import Console
 from rich.panel import Panel
 from rich.markdown import Markdown
@@ -9,6 +9,8 @@ from rich.live import Live
 from .config import ConfigManager
 from .api import create_payload, stream_completion
 from .tools import execute_local_tool
+from .utils import upgrade_polly, restart_program
+from .models import list_models_table
 
 console = Console()
 
@@ -18,20 +20,52 @@ class PollyIDE:
         self.cfg = self.cfg_mgr.load()
         self.history = [{"role": "system", "content": self.cfg_mgr.get_system_prompt()}]
 
+    def handle_slash_command(self, cmd):
+        """Обработчик команд типа /reset, /upgrade"""
+        parts = cmd.split()
+        base = parts[0].lower()
+        
+        if base == "/reset":
+            self.history = [{"role": "system", "content": self.cfg_mgr.get_system_prompt()}]
+            console.print("[yellow]🧹 Context memory cleared.[/]")
+            return True
+            
+        elif base == "/upgrade":
+            upgrade_polly() # Если обновится, то перезапустится внутри функции
+            return True
+            
+        elif base == "/models":
+            list_models_table()
+            return True
+
+        elif base == "/config":
+            # Показываем конфиг
+            console.print(Panel(json.dumps(self.cfg, indent=2), title="Current Config", border_style="cyan"))
+            return True
+            
+        elif base == "/exit":
+            exit(0)
+
+        elif base == "/help":
+            console.print("[bold]Available Commands:[/]")
+            console.print(" /reset   - Clear chat history")
+            console.print(" /upgrade - Check for updates")
+            console.print(" /models  - List available AI models")
+            console.print(" /config  - Show current settings")
+            console.print(" /exit    - Quit Polly")
+            return True
+            
+        return False
+
     def run_stream(self):
         payload = create_payload(self.cfg["model"], self.history, self.cfg)
-        
         full_content = ""
         tool_buffer = []
-        
-        # UI State
         markdown_text = ""
         
-        # В режиме стриминга мы обновляем панель в реальном времени
-        with Live(Panel("Waiting for response...", title="Polly", border_style="blue"), refresh_per_second=10) as live:
+        with Live(Panel("...", title=f"Polly ({self.cfg['model']}) @ {os.getcwd()}", border_style="blue"), refresh_per_second=10) as live:
             try:
                 response = stream_completion(payload, self.cfg["api_key"])
-                
                 for line in response.iter_lines():
                     if not line: continue
                     decoded = line.decode('utf-8')
@@ -42,20 +76,14 @@ class PollyIDE:
                     try:
                         chunk = json.loads(data_str)
                         delta = chunk["choices"][0]["delta"]
-
-                        # 1. Текст
+                        
                         if "content" in delta and delta["content"]:
                             txt = delta["content"]
                             full_content += txt
                             markdown_text += txt
-                            live.update(Panel(Markdown(markdown_text), title=f"Polly ({self.cfg['model']})", border_style="blue"))
-
-                        # 2. Мысли (Reasoning)
-                        if "reasoning_content" in delta and delta["reasoning_content"]:
-                            # Можно выводить отдельно, если нужно
-                            pass 
-
-                        # 3. Инструменты (Tool Calls)
+                            # Обновляем панель с текущей директорией в заголовке
+                            live.update(Panel(Markdown(markdown_text), title=f"Polly ({self.cfg['model']}) @ {os.getcwd()}", border_style="blue"))
+                        
                         if "tool_calls" in delta:
                             t_calls = delta["tool_calls"]
                             for tc in t_calls:
@@ -67,14 +95,11 @@ class PollyIDE:
                                     if "function" in tc:
                                         if "name" in tc["function"]: tool_buffer[idx]["function"]["name"] += tc["function"]["name"]
                                         if "arguments" in tc["function"]: tool_buffer[idx]["function"]["arguments"] += tc["function"]["arguments"]
-
-                    except:
-                        continue
+                    except: continue
             except Exception as e:
                 live.update(Panel(f"[red]Error: {e}[/]", title="Crash"))
                 return
 
-        # Пост-обработка
         if full_content:
             self.history.append({"role": "assistant", "content": full_content})
 
@@ -91,7 +116,6 @@ class PollyIDE:
 
                 console.print(f"[dim]🔧 Tool: {func_name}[/]")
                 
-                # Если это Google Search и он был разрешен (хотя API может сам вернуть ответ)
                 if func_name == "google_search":
                     result = "Context injected by Pollinations Backend."
                 else:
@@ -103,23 +127,21 @@ class PollyIDE:
                     "name": func_name,
                     "content": str(result)
                 })
-            
-            # Рекурсия для обработки результата инструмента
             self.run_stream()
 
     def start(self):
         console.clear()
-        console.print(Panel(f"[bold green]Polly IDE v2.1[/]\n[dim]Model: {self.cfg['model']} | Reasoning: {self.cfg['reasoning']}[/]", border_style="green"))
+        console.print(Panel(f"[bold green]Polly IDE v2.2[/]\n[dim]Model: {self.cfg['model']} | CWD: {os.getcwd()}[/]", border_style="green"))
         
         while True:
             try:
-                user_in = Prompt.ask("\n[bold blue]You[/]")
+                user_in = Prompt.ask(f"\n[bold blue]You ({os.path.basename(os.getcwd())})[/]")
                 if not user_in: continue
-                if user_in.lower() in ['exit', 'quit']: break
-                if user_in.lower() == 'clear':
-                    self.history = [{"role": "system", "content": self.cfg_mgr.get_system_prompt()}]
-                    console.print("[yellow]Memory Cleared[/]")
-                    continue
+                
+                # Проверяем на slash команду
+                if user_in.startswith("/"):
+                    if self.handle_slash_command(user_in):
+                        continue
 
                 self.history.append({"role": "user", "content": user_in})
                 self.run_stream()

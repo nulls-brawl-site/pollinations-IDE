@@ -1,4 +1,3 @@
-# polly/api.py
 import requests
 import json
 from .tools import get_tools_schema
@@ -6,27 +5,34 @@ from .tools import get_tools_schema
 API_URL = "https://gen.pollinations.ai/v1/chat/completions"
 
 def create_payload(model, history, config_data):
-    # Логика Reasoning (Thinking)
-    # Если включено - ставим высокий бюджет токенов для качества
-    # Если выключено - ставим минимальный/disabled
-    thinking_payload = {"type": "disabled"}
-    
-    if config_data.get("reasoning"):
-        # Для Pollinations бюджет мышления в токенах
-        thinking_payload = {
-            "type": "enabled", 
-            "budget_tokens": 4096 # Высокое качество
-        }
-
-    return {
+    # Базовый пейлоад
+    payload = {
         "model": model,
         "messages": history,
         "tools": get_tools_schema(model),
         "stream": True,
-        "thinking": thinking_payload,
-        # Если модель поддерживает reasoning_effort (openai o1/o3), можно добавить:
-        # "reasoning_effort": "high" 
     }
+
+    # Логика добавления Reasoning параметров только если это включено
+    if config_data.get("reasoning", False):
+        # 1. Для моделей Claude и Kimi (используют 'thinking')
+        if "claude" in model or "kimi" in model:
+            payload["thinking"] = {
+                "type": "enabled", 
+                "budget_tokens": config_data.get("budget_tokens", 4096)
+            }
+        
+        # 2. Для моделей OpenAI o1/o3 (используют 'reasoning_effort')
+        elif "o1" in model or "o3" in model:
+            payload["reasoning_effort"] = config_data.get("reasoning_effort", "high")
+            
+        # 3. DeepSeek R1 обычно работает сам по себе, но если Pollinations
+        # обновит API под него, настройки могут поменяться.
+    
+    # ВАЖНО: Если reasoning выключен, мы НЕ добавляем поле "thinking" вообще.
+    # Отправка {"type": "disabled"} вызывает 500 ошибку на многих моделях.
+
+    return payload
 
 def stream_completion(payload, api_key=None):
     headers = {"Content-Type": "application/json"}
@@ -34,8 +40,19 @@ def stream_completion(payload, api_key=None):
         headers["Authorization"] = f"Bearer {api_key}"
 
     try:
-        response = requests.post(API_URL, headers=headers, json=payload, stream=True, timeout=120)
+        # Увеличим таймаут, так как reasoning-модели могут думать долго перед первым токеном
+        response = requests.post(API_URL, headers=headers, json=payload, stream=True, timeout=180)
+        
+        # Если сервер вернул ошибку, пробуем прочитать тело ответа для деталей перед raise
+        if response.status_code >= 400:
+            try:
+                error_msg = response.json()
+                print(f"API Error Details: {error_msg}")
+            except:
+                pass # Если тело не JSON, просто пропустим
+                
         response.raise_for_status()
         return response
     except requests.exceptions.RequestException as e:
-        raise Exception(f"Network Error: {e}")
+        # Более понятный вывод ошибки
+        raise Exception(f"Network Error ({e}) - Check parameters or model compatibility.")

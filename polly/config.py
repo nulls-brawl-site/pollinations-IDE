@@ -12,7 +12,7 @@ You are Polly, an elite IDE AI Assistant.
 - Use `write_file` to create code, do not just print it.
 - If the user asks for information and you have search capabilities, use them.
 - Be concise, professional, and accurate.
-- Always add env file if needed, and ask user for api keys using tool calling.
+- Always add env file if its needed in your script, and ask user for api keys using tool calling.
 """
 
 class ConfigManager:

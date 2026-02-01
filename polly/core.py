@@ -1,5 +1,6 @@
 import json
 import os
+import shlex
 from rich.console import Console
 from rich.panel import Panel
 from rich.markdown import Markdown
@@ -9,7 +10,7 @@ from rich.live import Live
 from .config import ConfigManager
 from .api import create_payload, stream_completion
 from .tools import execute_local_tool
-from .utils import upgrade_polly, restart_program
+from .utils import upgrade_polly
 from .models import list_models_table
 
 console = Console()
@@ -20,10 +21,17 @@ class PollyIDE:
         self.cfg = self.cfg_mgr.load()
         self.history = [{"role": "system", "content": self.cfg_mgr.get_system_prompt()}]
 
-    def handle_slash_command(self, cmd):
-        """Обработчик команд типа /reset, /upgrade"""
-        parts = cmd.split()
+    def handle_slash_command(self, cmd_line):
+        """Обработчик команд типа /reset, /api, /google"""
+        try:
+            # Используем shlex для правильного разбора кавычек: /api "my key"
+            parts = shlex.split(cmd_line)
+        except ValueError:
+            parts = cmd_line.split()
+            
         base = parts[0].lower()
+        
+        # --- COMMANDS ---
         
         if base == "/reset":
             self.history = [{"role": "system", "content": self.cfg_mgr.get_system_prompt()}]
@@ -31,7 +39,7 @@ class PollyIDE:
             return True
             
         elif base == "/upgrade":
-            upgrade_polly() # Если обновится, то перезапустится внутри функции
+            upgrade_polly()
             return True
             
         elif base == "/models":
@@ -39,21 +47,64 @@ class PollyIDE:
             return True
 
         elif base == "/config":
-            # Показываем конфиг
             console.print(Panel(json.dumps(self.cfg, indent=2), title="Current Config", border_style="cyan"))
+            return True
+        
+        # --- SETTINGS TOGGLES ---
+
+        elif base == "/google":
+            if len(parts) < 2: 
+                console.print("[red]Usage: /google on|off[/]")
+                return True
+            val = parts[1].lower() == "on"
+            self.cfg_mgr.update("google_search", val)
+            self.cfg = self.cfg_mgr.load() # Reload config
+            console.print(f"[green]Google Search set to: {val}[/]")
+            return True
+
+        elif base == "/reasoning":
+            if len(parts) < 2: 
+                console.print("[red]Usage: /reasoning on|off[/]")
+                return True
+            val = parts[1].lower() == "on"
+            self.cfg_mgr.update("reasoning", val)
+            self.cfg = self.cfg_mgr.load()
+            console.print(f"[green]Reasoning (Thinking) set to: {val}[/]")
+            return True
+
+        elif base == "/api":
+            if len(parts) < 2:
+                console.print("[red]Usage: /api \"sk-your-key\"[/]")
+                return True
+            key = parts[1]
+            self.cfg_mgr.update("api_key", key)
+            self.cfg = self.cfg_mgr.load()
+            console.print("[green]API Key updated.[/]")
+            return True
+        
+        elif base == "/model":
+            if len(parts) < 2:
+                console.print("[red]Usage: /model name (e.g. claude)[/]")
+                return True
+            self.cfg_mgr.update("model", parts[1])
+            self.cfg = self.cfg_mgr.load()
+            console.print(f"[green]Model switched to {parts[1]}[/]")
+            return True
+
+        elif base == "/help":
+            console.print("[bold cyan]Polly Commands:[/]")
+            console.print(" [green]/reset[/]          - Clear history")
+            console.print(" [green]/upgrade[/]        - Force update")
+            console.print(" [green]/models[/]         - List all models")
+            console.print(" [green]/config[/]         - Show settings")
+            console.print(" [green]/google on|off[/]  - Toggle search")
+            console.print(" [green]/reasoning on|off[/]- Toggle thinking")
+            console.print(" [green]/api \"key\"[/]      - Set API key")
+            console.print(" [green]/model name[/]     - Switch model")
             return True
             
         elif base == "/exit":
             exit(0)
-
-        elif base == "/help":
-            console.print("[bold]Available Commands:[/]")
-            console.print(" /reset   - Clear chat history")
-            console.print(" /upgrade - Check for updates")
-            console.print(" /models  - List available AI models")
-            console.print(" /config  - Show current settings")
-            console.print(" /exit    - Quit Polly")
-            return True
             
         return False
 
@@ -63,6 +114,7 @@ class PollyIDE:
         tool_buffer = []
         markdown_text = ""
         
+        # Стриминг текста
         with Live(Panel("...", title=f"Polly ({self.cfg['model']}) @ {os.getcwd()}", border_style="blue"), refresh_per_second=10) as live:
             try:
                 response = stream_completion(payload, self.cfg["api_key"])
@@ -81,7 +133,6 @@ class PollyIDE:
                             txt = delta["content"]
                             full_content += txt
                             markdown_text += txt
-                            # Обновляем панель с текущей директорией в заголовке
                             live.update(Panel(Markdown(markdown_text), title=f"Polly ({self.cfg['model']}) @ {os.getcwd()}", border_style="blue"))
                         
                         if "tool_calls" in delta:
@@ -103,6 +154,7 @@ class PollyIDE:
         if full_content:
             self.history.append({"role": "assistant", "content": full_content})
 
+        # Обработка инструментов ПОСЛЕ завершения текстового стрима
         if tool_buffer:
             self.history.append({"role": "assistant", "content": full_content, "tool_calls": tool_buffer})
             
@@ -114,12 +166,25 @@ class PollyIDE:
                 except:
                     args = {}
 
-                console.print(f"[dim]🔧 Tool: {func_name}[/]")
+                # --- АНИМАЦИЯ ИСПОЛНЕНИЯ ---
+                # Формируем красивое описание действия
+                status_text = f"Executing {func_name}..."
+                if func_name == "write_file":
+                    status_text = f"Writing file '{args.get('path', 'unknown')}'..."
+                elif func_name == "read_file":
+                    status_text = f"Reading file '{args.get('path', 'unknown')}'..."
+                elif func_name == "execute_command":
+                    status_text = f"Running: {args.get('command', '')}..."
                 
-                if func_name == "google_search":
-                    result = "Context injected by Pollinations Backend."
-                else:
-                    result = execute_local_tool(func_name, args)
+                # Показываем спиннер, пока выполняется действие
+                with console.status(f"[bold yellow]{status_text}[/]", spinner="dots"):
+                    if func_name == "google_search":
+                        result = "Context injected by Pollinations Backend."
+                    else:
+                        result = execute_local_tool(func_name, args)
+
+                # Когда закончили, выводим финальную строку (как лог)
+                console.print(f"[dim]🛠  Tool: {func_name} ({args.get('path', '') or args.get('command', '')})[/]")
 
                 self.history.append({
                     "role": "tool",
@@ -127,18 +192,19 @@ class PollyIDE:
                     "name": func_name,
                     "content": str(result)
                 })
+            
+            # Рекурсия (модель видит результат и продолжает отвечать)
             self.run_stream()
 
     def start(self):
         console.clear()
-        console.print(Panel(f"[bold green]Polly IDE v2.2[/]\n[dim]Model: {self.cfg['model']} | CWD: {os.getcwd()}[/]", border_style="green"))
+        console.print(Panel(f"[bold green]Polly IDE v2.3[/]\n[dim]Model: {self.cfg['model']} | Reasoning: {self.cfg['reasoning']}[/]", border_style="green"))
         
         while True:
             try:
                 user_in = Prompt.ask(f"\n[bold blue]You ({os.path.basename(os.getcwd())})[/]")
                 if not user_in: continue
                 
-                # Проверяем на slash команду
                 if user_in.startswith("/"):
                     if self.handle_slash_command(user_in):
                         continue

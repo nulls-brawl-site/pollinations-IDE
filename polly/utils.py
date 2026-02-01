@@ -6,34 +6,43 @@ from rich.console import Console
 from rich.panel import Panel
 
 console = Console()
-# Твой репозиторий
 REPO_URL = "https://github.com/nulls-brawl-site/pollinations-IDE.git"
 
 def restart_program():
-    """Перезапускает текущий процесс Polly"""
+    """
+    Перезапускает Polly.
+    ВАЖНО: Удаляет аргументы 'upgrade' из команды запуска, 
+    чтобы не попасть в бесконечный цикл обновлений.
+    """
     console.print("[yellow]🔄 Restarting Polly system...[/]")
     time.sleep(1)
-    # Заменяем текущий процесс новым экземпляром python
-    os.execv(sys.executable, [sys.executable] + sys.argv)
+    
+    # Фильтруем аргументы: убираем всё, что связано с апгрейдом
+    # Было: ['/usr/bin/polly', 'upgrade']
+    # Стало: ['/usr/bin/polly']
+    new_argv = [arg for arg in sys.argv if "upgrade" not in arg.lower() and "/upgrade" not in arg.lower()]
+    
+    # Перезапускаем процесс с чистыми аргументами
+    os.execv(sys.executable, [sys.executable] + new_argv)
 
 def upgrade_polly():
-    """Агрессивное обновление: качает последнюю версию кода, игнорируя кэш и номера версий"""
-    console.print(Panel(f"[yellow]Force Pulling from GitHub...[/]\n[dim]{REPO_URL}[/]", title="System Upgrade"))
+    """
+    Обновляет Polly с GitHub.
+    Использует --no-cache-dir для проверки свежих коммитов,
+    но без --force-reinstall, чтобы не качать лишние библиотеки.
+    """
+    console.print(Panel(f"[yellow]Pulling updates from GitHub...[/]\n[dim]{REPO_URL}[/]", title="System Upgrade"))
     
     try:
-        # Добавляем флаги:
-        # --force-reinstall : переустановить, даже если версия та же
-        # --no-cache-dir    : не смотреть в кэш pip, качать свежее с гита
+        # Убрали --force-reinstall, оставили только --upgrade и --no-cache-dir
+        # Это заставит pip проверить Git, но не будет перекачивать rich/requests если они есть.
         cmd = [
             sys.executable, "-m", "pip", "install", 
             "--upgrade", 
-            "--force-reinstall", 
             "--no-cache-dir", 
             f"git+{REPO_URL}"
         ]
         
-        # Запускаем и показываем прогресс (pip будет писать в stdout)
-        # В этот раз не скрываем вывод, чтобы было видно, что идет скачивание
         process = subprocess.run(cmd, text=True)
         
         if process.returncode != 0:
@@ -41,9 +50,9 @@ def upgrade_polly():
             return
 
         console.print("[bold green]🚀 Upgrade Successful![/]")
-        console.print("[dim]Applying changes...[/]")
+        console.print("[dim]Launching new version...[/]")
         
-        # Перезапуск
+        # Перезапуск в обычный режим
         restart_program()
 
     except Exception as e:

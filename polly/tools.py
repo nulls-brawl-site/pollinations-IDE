@@ -155,7 +155,7 @@ def execute_local_tool(name, args):
             items.sort() # Сортировка для удобства
             
             res = []
-            for item in items[:10000]: # Ограничение вывода
+            for item in items[:100000]: # Ограничение вывода
                 full_path = os.path.join(path, item)
                 prefix = "📁" if os.path.isdir(full_path) else "📄"
                 res.append(f"{prefix} {item}")

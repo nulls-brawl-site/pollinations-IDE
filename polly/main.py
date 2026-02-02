@@ -1,5 +1,6 @@
 import argparse
 import sys
+import os
 from rich.console import Console
 from .core import PollyIDE
 from .config import ConfigManager
@@ -10,8 +11,6 @@ console = Console()
 
 def main():
     parser = argparse.ArgumentParser(description="Polly - AI IDE CLI")
-    
-    # Делаем подкоманды опциональными, чтобы просто polly запускало IDE
     subparsers = parser.add_subparsers(dest="command", help="Available commands")
 
     subparsers.add_parser("config", help="Configure Polly")
@@ -19,9 +18,10 @@ def main():
     subparsers.add_parser("upgrade", help="Force update Polly")
     subparsers.add_parser("reset", help="Reset all settings")
     subparsers.add_parser("help", help="Show this help message")
-
-    # Если пользователь ввел polly --help или -h, argparse сам обработает это.
-    # Но если polly help, то нам нужен хендлер ниже.
+    
+    # Новая команда prompt
+    p_parser = subparsers.add_parser("prompt", help="Set custom system prompt file")
+    p_parser.add_argument("path", help="Path to prompt.txt")
 
     args, unknown = parser.parse_known_args()
     mgr = ConfigManager()
@@ -39,17 +39,18 @@ def main():
         return
 
     if args.command == "reset":
-        # Тут можно вызвать логику ресета
         console.print("[yellow]Please use /reset inside the app or delete ~/.polly[/]")
         return
     
-    # Если команда config (но без аргументов она мало полезна в CLI, лучше в чате /config)
-    if args.command == "config":
-        # Можно добавить парсинг аргументов, но мы перенесли всё в /slash commands
-        console.print("[dim]Use /config inside Polly or edit ~/.polly/config.json[/]")
+    if args.command == "prompt":
+        if os.path.exists(args.path):
+            mgr.update("custom_prompt_path", os.path.abspath(args.path))
+            console.print(f"[green]System prompt set to {args.path}[/]")
+        else:
+            console.print(f"[red]File not found: {args.path}[/]")
         return
 
-    # ЗАПУСК IDE
+    # Запуск IDE
     ide = PollyIDE()
     if unknown:
         msg = " ".join(unknown)

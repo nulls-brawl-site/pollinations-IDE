@@ -143,48 +143,45 @@ class PollyIDE:
         if tool_buffer:
             self.history.append({"role": "assistant", "content": full_content, "tool_calls": tool_buffer})
             
-            for tool in tool_buffer:
-                func_name = tool["function"]["name"]
-                call_id = tool["id"]
-                try:
-                    args = json.loads(tool["function"]["arguments"])
-                except:
-                    args = {}
-# ... внутри цикла обработки tool_calls ...
+# Replace the inner loop that processes tool_buffer with this fixed version.
 
-                # АНИМАЦИЯ
-                spinner_text = f"Running {func_name}..."
-                if func_name == "write_file":
-                    path = args.get('path', '???')
-                    spinner_text = f"Writing file {path}..."
-                elif func_name == "read_file":
-                    spinner_text = f"Reading file {args.get('path')}..."
-                
-                # ДЛЯ КОМАНД МЫ НЕ ИСПОЛЬЗУЕМ СПИННЕР, 
-                # потому что команда сама пишет output в консоль в реальном времени
-                if func_name == "execute_command":
-                    console.print(f"[dim]🚀 Launching command: {args.get('command')}[/]")
-                    if func_name == "google_search":
-                        result = "Search results injected by backend."
-                    else:
-                        # Тул сам обработает вывод и Ctrl+C
-                        result = execute_local_tool(func_name, args)
-                
-                # Для остальных тулзов - спиннер
-                else:
-                    with console.status(f"[bold white]{spinner_text}[/]", spinner="dots"):
-                        if func_name == "google_search":
-                            result = "Search results injected by backend."
-                        else:
-                            result = execute_local_tool(func_name, args)
-                    console.print(f"[dim]🛠 {spinner_text} [green]Done.[/][/]")
+for tool in tool_buffer:
+    func_name = tool["function"]["name"]
+    call_id = tool["id"]
+    try:
+        args = json.loads(tool["function"]["arguments"])
+    except:
+        args = {}
 
-                self.history.append({
-                    "role": "tool",
-                    "tool_call_id": call_id,
-                    "name": func_name,
-                    "content": str(result)
-                })
+    # АНИМАЦИЯ
+    spinner_text = f"Running {func_name}..."
+    if func_name == "write_file":
+        path = args.get('path', '???')
+        spinner_text = f"Writing file {path}..."
+    elif func_name == "read_file":
+        spinner_text = f"Reading file {args.get('path')}..."
+
+    # Special-case: execute_command does not use the spinner (prints live output)
+    if func_name == "execute_command":
+        console.print(f"[dim]🚀 Launching command: {args.get('command')}[/]")
+        result = execute_local_tool(func_name, args)
+
+    # Special-case: google_search is handled/injected by backend here
+    elif func_name == "google_search":
+        result = "Search results injected by backend."
+
+    # All other tools run with a spinner
+    else:
+        with console.status(f"[bold white]{spinner_text}[/]", spinner="dots"):
+            result = execute_local_tool(func_name, args)
+        console.print(f"[dim]🛠 {spinner_text} [green]Done.[/][/]")
+
+    self.history.append({
+        "role": "tool",
+        "tool_call_id": call_id,
+        "name": func_name,
+        "content": str(result)
+    })
             
             self.run_stream()
 

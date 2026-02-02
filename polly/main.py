@@ -19,7 +19,6 @@ def main():
     subparsers.add_parser("reset", help="Reset all settings")
     subparsers.add_parser("help", help="Show this help message")
     
-    # Новая команда prompt
     p_parser = subparsers.add_parser("prompt", help="Set custom system prompt file")
     p_parser.add_argument("path", help="Path to prompt.txt")
 
@@ -50,7 +49,6 @@ def main():
             console.print(f"[red]File not found: {args.path}[/]")
         return
 
-    # Запуск IDE
     ide = PollyIDE()
     if unknown:
         msg = " ".join(unknown)

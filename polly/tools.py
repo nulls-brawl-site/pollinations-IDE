@@ -1,115 +1,82 @@
 import os
 import shutil
 import subprocess
+import time
+import threading
+import signal
 from rich.prompt import Prompt
 from rich.console import Console
+from .models import supports_search
 
 console = Console()
 
+# Глобальное хранилище запущенных фоновых процессов
+# Format: {pid: subprocess.Popen}
+ACTIVE_PROCESSES = {}
+
 def get_tools_schema(config):
-    """
-    Возвращает схему инструментов.
-    Включает Google Search только если он активирован в настройках пользователя.
-    """
     tools = [
         # --- ФАЙЛОВАЯ СИСТЕМА ---
         {
             "type": "function",
             "function": {
                 "name": "list_files",
-                "description": "List files and folders in a directory. Use path='.' for current directory.",
-                "parameters": {
-                    "type": "object", 
-                    "properties": {
-                        "path": {"type": "string", "description": "Directory path", "default": "."}
-                    },
-                    "required": ["path"]
-                }
+                "description": "List all files in directory. No limits.",
+                "parameters": {"type": "object", "properties": {"path": {"type": "string", "default": "."}}}
             }
         },
         {
             "type": "function",
             "function": {
                 "name": "read_file",
-                "description": "Read the content of a file.",
-                "parameters": {
-                    "type": "object", 
-                    "properties": {
-                        "path": {"type": "string", "description": "File path"}
-                    }, 
-                    "required": ["path"]
-                }
+                "description": "Read FULL content of a file. No truncation.",
+                "parameters": {"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]}
             }
         },
         {
             "type": "function",
             "function": {
                 "name": "write_file",
-                "description": "Create a new file or overwrite an existing one with content.",
-                "parameters": {
-                    "type": "object", 
-                    "properties": {
-                        "path": {"type": "string", "description": "File path"},
-                        "content": {"type": "string", "description": "Full file content"}
-                    }, 
-                    "required": ["path", "content"]
-                }
+                "description": "Create/Overwrite file.",
+                "parameters": {"type": "object", "properties": {"path": {"type": "string"}, "content": {"type": "string"}}, "required": ["path", "content"]}
             }
         },
         {
             "type": "function",
             "function": {
                 "name": "delete_item",
-                "description": "Delete a file or directory permanently.",
-                "parameters": {
-                    "type": "object", 
-                    "properties": {
-                        "path": {"type": "string", "description": "Path to item"}
-                    }, 
-                    "required": ["path"]
-                }
+                "description": "Delete file/folder.",
+                "parameters": {"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]}
             }
         },
         {
             "type": "function",
             "function": {
                 "name": "create_folder",
-                "description": "Create a new directory (and parent directories if needed).",
-                "parameters": {
-                    "type": "object", 
-                    "properties": {
-                        "path": {"type": "string", "description": "Directory path"}
-                    }, 
-                    "required": ["path"]
-                }
+                "description": "Mkdir -p",
+                "parameters": {"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]}
             }
         },
         {
             "type": "function",
             "function": {
                 "name": "move_item",
-                "description": "Move or rename a file/directory.",
-                "parameters": {
-                    "type": "object", 
-                    "properties": {
-                        "src": {"type": "string", "description": "Source path"},
-                        "dest": {"type": "string", "description": "Destination path"}
-                    }, 
-                    "required": ["src", "dest"]
-                }
+                "description": "Move/Rename",
+                "parameters": {"type": "object", "properties": {"src": {"type": "string"}, "dest": {"type": "string"}}, "required": ["src", "dest"]}
             }
         },
         
-        # --- ТЕРМИНАЛ И ОКРУЖЕНИЕ ---
+        # --- EXECUTE / ENV ---
         {
             "type": "function",
             "function": {
                 "name": "execute_command",
-                "description": "Execute a shell command (e.g., pip install, git status). Use with caution.",
+                "description": "Run shell command. Use 'background=True' for servers/tunnels/long scripts.",
                 "parameters": {
                     "type": "object", 
                     "properties": {
-                        "command": {"type": "string", "description": "Shell command to run"}
+                        "command": {"type": "string", "description": "Command to run"},
+                        "background": {"type": "boolean", "description": "Set True for servers/daemons. Default False."}
                     }, 
                     "required": ["command"]
                 }
@@ -119,169 +86,165 @@ def get_tools_schema(config):
             "type": "function",
             "function": {
                 "name": "secrets_env",
-                "description": "Securely request API keys or secrets from the user and append them to .env file.",
+                "description": "Request secrets securely.",
                 "parameters": {
                     "type": "object", 
-                    "properties": {
-                        "keys": {
-                            "type": "array", 
-                            "items": {"type": "string"},
-                            "description": "List of variable names (e.g., ['OPENAI_API_KEY', 'DB_PASSWORD'])"
-                        }
-                    }, 
+                    "properties": {"keys": {"type": "array", "items": {"type": "string"}}}, 
                     "required": ["keys"]
                 }
             }
         }
     ]
 
-    # Добавляем Google Search, если он включен в конфиге пользователя
-    # По умолчанию True, если ключа нет
     if config.get("google_search", True):
         tools.append({"type": "google_search"})
     
     return tools
 
-def execute_local_tool(name, args):
-    """Исполняет инструменты локально на машине пользователя"""
+def stream_process_output(process, capture_buffer):
+    """Читает вывод процесса в реальном времени и пишет в консоль"""
     try:
-        # --- LIST FILES ---
+        # Читаем stdout посимвольно/построчно
+        for line in iter(process.stdout.readline, ''):
+            if not line: break
+            print(line, end='') # Вывод прямо в терминал пользователя
+            capture_buffer.append(line)
+    except:
+        pass
+
+def execute_local_tool(name, args):
+    try:
         if name == "list_files":
             path = args.get("path", ".")
-            if not os.path.exists(path):
-                return f"Error: Path '{path}' does not exist."
-            
+            if not os.path.exists(path): return f"Error: Path '{path}' not found."
             items = os.listdir(path)
-            items.sort() # Сортировка для удобства
-            
+            items.sort()
             res = []
-            for item in items[:100000]: # Ограничение вывода
-                full_path = os.path.join(path, item)
-                prefix = "📁" if os.path.isdir(full_path) else "📄"
-                res.append(f"{prefix} {item}")
-            
-            output = "\n".join(res)
-            return f"Directory: {os.path.abspath(path)}\n{output}"
+            for item in items: # УБРАН ЛИМИТ [:100]
+                full = os.path.join(path, item)
+                mark = "📁" if os.path.isdir(full) else "📄"
+                res.append(f"{mark} {item}")
+            return f"Dir: {os.path.abspath(path)}\n" + "\n".join(res)
         
-        # --- READ FILE ---
         elif name == "read_file":
-            path = args["path"]
-            if not os.path.exists(path):
-                return f"Error: File '{path}' not found."
-            with open(path, 'r', encoding='utf-8') as f:
-                return f.read()
+            with open(args["path"], 'r', encoding='utf-8') as f:
+                return f.read() # УБРАН ЛИМИТ на чтение
         
-        # --- WRITE FILE ---
         elif name == "write_file":
-            path = args["path"]
-            # Создаем папки, если путь содержит несуществующие директории
-            directory = os.path.dirname(os.path.abspath(path))
-            if directory and not os.path.exists(directory):
-                os.makedirs(directory, exist_ok=True)
-                
-            with open(path, 'w', encoding='utf-8') as f:
+            p = args["path"]
+            os.makedirs(os.path.dirname(os.path.abspath(p)), exist_ok=True)
+            with open(p, 'w', encoding='utf-8') as f:
                 f.write(args["content"])
-            return f"Success: File '{path}' written successfully."
+            return f"Success: Wrote {len(args['content'])} chars to {p}"
         
-        # --- DELETE ITEM ---
         elif name == "delete_item":
-            path = args["path"]
-            if not os.path.exists(path):
-                return f"Error: Item '{path}' not found."
-            
-            if os.path.isdir(path):
-                shutil.rmtree(path)
-            else:
-                os.remove(path)
-            return f"Success: Deleted '{path}'."
+            p = args["path"]
+            if os.path.isdir(p): shutil.rmtree(p)
+            else: os.remove(p)
+            return f"Deleted {p}"
 
-        # --- CREATE FOLDER ---
         elif name == "create_folder":
-            path = args["path"]
-            os.makedirs(path, exist_ok=True)
-            return f"Success: Created directory '{path}'."
+            os.makedirs(args["path"], exist_ok=True)
+            return f"Created {args['path']}"
 
-        # --- MOVE ITEM ---
         elif name == "move_item":
-            src = args["src"]
-            dest = args["dest"]
-            shutil.move(src, dest)
-            return f"Success: Moved '{src}' to '{dest}'."
+            shutil.move(args["src"], args["dest"])
+            return f"Moved {args['src']} to {args['dest']}"
 
-        # --- EXECUTE COMMAND ---
+        # --- EXECUTE COMMAND (THE BEAST) ---
         elif name == "execute_command":
             cmd = args["command"]
+            is_bg = args.get("background", False)
             
-            # Обработка 'cd' (смена директории процесса)
+            # Change Dir Support
             if cmd.startswith("cd "):
-                target_dir = cmd[3:].strip()
                 try:
-                    os.chdir(target_dir)
-                    return f"Changed working directory to: {os.getcwd()}"
+                    os.chdir(cmd[3:].strip())
+                    return f"CWD changed to {os.getcwd()}"
                 except Exception as e:
-                    return f"Error changing directory: {str(e)}"
-            
-            # Простейшая защита от случайного удаления корня
-            if "rm -rf /" in cmd and len(cmd) < 12:
-                return "Error: Command blocked by safety policy."
+                    return f"Error: {e}"
 
-            # Запуск команды
-            # Используем shell=True, чтобы работали пайпы и перенаправления
-            result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
+            console.print(f"[bold dim]>> Executing: {cmd}[/]")
+            if is_bg:
+                console.print(f"[yellow]>> Starting in BACKGROUND mode (Monitoring for 10s)...[/]")
+
+            # Запускаем процесс
+            try:
+                # Используем Popen для контроля
+                process = subprocess.Popen(
+                    cmd, 
+                    shell=True, 
+                    stdout=subprocess.PIPE, 
+                    stderr=subprocess.STDOUT, 
+                    text=True, 
+                    bufsize=1,
+                    preexec_fn=os.setsid # Создаем группу процессов (чтобы убивать все дерево)
+                )
+            except Exception as e:
+                return f"Failed to start: {e}"
+
+            # Буфер для логов
+            output_buffer = []
             
-            stdout = result.stdout.strip()
-            stderr = result.stderr.strip()
-            
-            output = ""
-            if stdout:
-                output += f"STDOUT:\n{stdout}\n"
-            if stderr:
-                output += f"STDERR:\n{stderr}\n"
-            
-            if not output:
-                output = "Command executed successfully (no output)."
+            # Если это фоновый процесс (сервер)
+            if is_bg:
+                ACTIVE_PROCESSES[process.pid] = process
                 
-            # Обрезаем слишком длинный вывод
-            return output[:50000]
+                # Запускаем поток чтения логов (чтобы не блокировать, но видеть начало)
+                # Читаем логи 10 секунд
+                start_time = time.time()
+                while time.time() - start_time < 10:
+                    line = process.stdout.readline()
+                    if not line: 
+                        if process.poll() is not None: break # Умер
+                        continue
+                    print(f"[BG] {line}", end='')
+                    output_buffer.append(line)
+                
+                # Проверка статуса
+                if process.poll() is None:
+                    return f"SUCCESS: Process started (PID {process.pid}) and is running.\nLogs so far:\n{''.join(output_buffer)}\n[Polly]: I will keep this running."
+                else:
+                    return f"ERROR: Process started but crashed immediately (Code {process.returncode}).\nLogs:\n{''.join(output_buffer)}"
 
-        # --- SECRETS ENV ---
+            # Если это обычный процесс (установка, ls, скрипт)
+            else:
+                try:
+                    # Читаем вывод в реальном времени
+                    for line in iter(process.stdout.readline, ''):
+                        print(line, end='')
+                        output_buffer.append(line)
+                    
+                    process.wait() # Ждем завершения
+                    return "".join(output_buffer)
+                
+                except KeyboardInterrupt:
+                    # ОБРАБОТКА CTRL+C
+                    console.print("\n[bold red]>> User interrupted command (SIGINT)[/]")
+                    # Убиваем группу процессов
+                    os.killpg(os.getpgid(process.pid), signal.SIGTERM)
+                    return f"Command interrupted by user.\nPartial Output:\n{''.join(output_buffer)}"
+
         elif name == "secrets_env":
             keys = args.get("keys", [])
-            if not keys:
-                return "Error: No keys provided."
-            
-            console.print(f"\n[bold yellow]🔒 POLLY REQUESTS SECRETS:[/]")
-            console.print("[dim]These values will be saved to .env locally.[/]")
-            
-            # Читаем текущий .env чтобы не перезатирать лишнее
+            console.print(f"\n[bold yellow]🔒 SECRETS REQUEST:[/]")
             env_map = {}
             if os.path.exists(".env"):
                 with open(".env", "r") as f:
                     for line in f:
                         if "=" in line:
-                            parts = line.strip().split("=", 1)
-                            env_map[parts[0]] = parts[1]
-
-            new_entries = []
+                            p = line.strip().split("=", 1)
+                            env_map[p[0]] = p[1]
             for key in keys:
-                if key in env_map:
-                    console.print(f"Key [cyan]{key}[/] already exists in .env. Skipping.")
-                else:
-                    # Ввод пароля скрыт
-                    val = Prompt.ask(f"Enter value for [cyan]{key}[/]", password=True)
+                if key not in env_map:
+                    val = Prompt.ask(f"Enter {key}", password=True)
                     env_map[key] = val
-                    new_entries.append(key)
-            
-            # Записываем обратно
             with open(".env", "w") as f:
                 for k, v in env_map.items():
                     f.write(f"{k}={v}\n")
-            
-            if not new_entries:
-                return "No new secrets added (.env already contained them)."
-            return f"Success: Added {', '.join(new_entries)} to .env file."
+            return "Secrets saved to .env"
 
     except Exception as e:
-        return f"System Error executing {name}: {str(e)}"
+        return f"System Error: {str(e)}"
     
-    return f"Error: Tool '{name}' is not implemented locally."
+    return "Unknown tool"

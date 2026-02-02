@@ -242,7 +242,7 @@ def execute_local_tool(name, args):
                 output = "Command executed successfully (no output)."
                 
             # Обрезаем слишком длинный вывод
-            return output[:5000]
+            return output[:50000]
 
         # --- SECRETS ENV ---
         elif name == "secrets_env":

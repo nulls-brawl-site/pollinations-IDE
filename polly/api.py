@@ -1,11 +1,13 @@
 import requests
 import json
+from rich.console import Console
 from .tools import get_tools_schema
 
+console = Console()
 API_URL = "https://gen.pollinations.ai/v1/chat/completions"
 
 def create_payload(model, history, config_data):
-    # Получаем список инструментов на основе конфига
+    # Получаем инструменты
     tools = get_tools_schema(config_data)
     
     payload = {
@@ -15,29 +17,26 @@ def create_payload(model, history, config_data):
         "stream": True,
     }
 
-    # --- ЛОГИКА THINKING / REASONING ---
-    # Мы включаем thinking ТОЛЬКО если пользователь попросил (/reasoning on)
-    
+    # --- ЛОГИКА REASONING (THINKING) ---
     if config_data.get("reasoning", False):
         
-        # ⚠️ ФИКС ДЛЯ GEMINI + TOOLS ⚠️
-        # Gemini (Vertex AI) падает с ошибкой "missing a thought_signature",
-        # если включить Thinking и одновременно использовать Tools (Function Calling).
-        # Поэтому для Gemini мы принудительно ОТКЛЮЧАЕМ thinking, если есть инструменты.
-        if "gemini" in model:
-            # Не добавляем thinking, чтобы избежать 400 ошибки.
-            # Модель все равно умная, справится и так.
-            pass
+        # 🛑 КРИТИЧЕСКИЙ ФИКС ДЛЯ GEMINI 🛑
+        # Gemini падает с ошибкой "missing thought_signature", если включить Thinking + Tools.
+        # Мы ПРИНУДИТЕЛЬНО игнорируем reasoning для всех моделей Gemini.
+        if "gemini" in model.lower():
+            # Можно вывести предупреждение в консоль, если хочешь
+            # console.print("[dim]Info: Reasoning disabled for Gemini to allow Tool usage.[/]")
+            pass 
 
-        # Для Claude (работает нормально с тулзами)
-        elif "claude" in model or "kimi" in model:
+        # Для Claude и Kimi (у них Thinking работает с тулзами нормально)
+        elif "claude" in model.lower() or "kimi" in model.lower():
             payload["thinking"] = {
                 "type": "enabled", 
                 "budget_tokens": config_data.get("budget_tokens", 4096)
             }
         
         # Для OpenAI o1/o3
-        elif "o1" in model or "o3" in model:
+        elif "o1" in model.lower() or "o3" in model.lower():
             payload["reasoning_effort"] = config_data.get("reasoning_effort", "high")
 
     return payload
@@ -48,18 +47,19 @@ def stream_completion(payload, api_key=None):
         headers["Authorization"] = f"Bearer {api_key}"
 
     try:
-        response = requests.post(API_URL, headers=headers, json=payload, stream=True, timeout=180)
+        response = requests.post(API_URL, headers=headers, json=payload, stream=True, timeout=120)
         
-        # Читаем ошибку, если есть
+        # Если 400/500, пробуем показать реальную причину
         if response.status_code >= 400:
             try:
                 err = response.json()
-                # Красивый вывод ошибки для отладки
-                print(f"\n[API ERROR]: {err.get('error', {}).get('message', 'Unknown')}")
+                msg = err.get('error', {}).get('message', str(err))
+                # Выводим в консоль, чтобы ты видел, что именно ответил Google
+                print(f"\n[API ERROR]: {msg}")
             except:
-                pass
+                print(f"\n[API ERROR]: Status {response.status_code}")
                 
         response.raise_for_status()
         return response
     except requests.exceptions.RequestException as e:
-        raise Exception(f"Network/API Error. {e}")
+        raise Exception(f"Network Error: {e}")

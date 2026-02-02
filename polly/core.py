@@ -42,8 +42,6 @@ class PollyIDE:
         elif base == "/config":
             console.print(Panel(json.dumps(self.cfg, indent=2), title="Config", border_style="cyan"))
             return True
-        
-        # --- NEW: PROMPT COMMAND ---
         elif base == "/prompt":
             if len(parts) < 2:
                 console.print("[red]Usage: /prompt /path/to/custom_prompt.txt[/]")
@@ -51,13 +49,11 @@ class PollyIDE:
             path = parts[1]
             if os.path.exists(path):
                 self.cfg_mgr.update("custom_prompt_path", os.path.abspath(path))
-                # Сброс памяти, чтобы применить новый промпт
                 self.history = [{"role": "system", "content": self.cfg_mgr.get_system_prompt()}]
                 console.print(f"[green]System prompt loaded from {path}. Memory reset.[/]")
             else:
                 console.print(f"[red]File not found: {path}[/]")
             return True
-
         elif base == "/google":
             if len(parts) < 2: return True
             val = parts[1].lower() == "on"
@@ -104,10 +100,100 @@ class PollyIDE:
                     if not line: continue
                     decoded = line.decode('utf-8')
                     if not decoded.startswith('data: '): continue
+                    
                     data_str = decoded.replace('data: ', '')
-                    if data_str == '[DONE]': break
+                    if data_str == '[DONE]': 
+                        break
                     
                     try:
+                        chunk = json.loads(data_str)
+                        delta = chunk["choices"][0]["delta"]
+                        
+                        if "content" in delta and delta["content"]:
+                            txt = delta["content"]
+                            full_content += txt
+                            markdown_text += txt
+                            live.update(Panel(Markdown(markdown_text), title=f"Polly ({self.cfg['model']})", border_style="blue"))
+                        
+                        if "tool_calls" in delta:
+                            t_calls = delta["tool_calls"]
+                            for tc in t_calls:
+                                if "index" in tc:
+                                    idx = tc["index"]
+                                    while len(tool_buffer) <= idx:
+                                        tool_buffer.append({"id": "", "function": {"name": "", "arguments": ""}, "type": "function"})
+                                    
+                                    if "id" in tc: 
+                                        tool_buffer[idx]["id"] += tc["id"]
+                                    
+                                    if "function" in tc:
+                                        if "name" in tc["function"]: 
+                                            tool_buffer[idx]["function"]["name"] += tc["function"]["name"]
+                                        if "arguments" in tc["function"]: 
+                                            tool_buffer[idx]["function"]["arguments"] += tc["function"]["arguments"]
+                    except json.JSONDecodeError:
+                        continue
+            except Exception as e:
+                live.update(Panel(f"[red]Error: {e}[/]", title="Error"))
+                return
+
+        if full_content:
+            self.history.append({"role": "assistant", "content": full_content})
+
+        if tool_buffer:
+            self.history.append({"role": "assistant", "content": full_content, "tool_calls": tool_buffer})
+            
+            for tool in tool_buffer:
+                func_name = tool["function"]["name"]
+                call_id = tool["id"]
+                try:
+                    args = json.loads(tool["function"]["arguments"])
+                except:
+                    args = {}
+
+                # АНИМАЦИЯ
+                spinner_text = f"Running {func_name}..."
+                if func_name == "write_file":
+                    path = args.get('path', '???')
+                    spinner_text = f"Writing file {path}..."
+                elif func_name == "read_file":
+                    spinner_text = f"Reading file {args.get('path')}..."
+                elif func_name == "execute_command":
+                    spinner_text = f"Executing: {args.get('command')}"
+                elif func_name == "google_search":
+                    spinner_text = f"Searching Google..."
+
+                with console.status(f"[bold white]{spinner_text}[/]", spinner="dots"):
+                    if func_name == "google_search":
+                        result = "Search results injected by backend."
+                    else:
+                        result = execute_local_tool(func_name, args)
+
+                console.print(f"[dim]🛠 {spinner_text} [green]Done.[/][/]")
+
+                self.history.append({
+                    "role": "tool",
+                    "tool_call_id": call_id,
+                    "name": func_name,
+                    "content": str(result)
+                })
+            
+            self.run_stream()
+
+    def start(self):
+        console.clear()
+        console.print(Panel(f"[bold green]Polly IDE v2.4[/]\n[dim]Model: {self.cfg['model']} | Reasoning: {self.cfg['reasoning']}[/]", border_style="green"))
+        
+        while True:
+            try:
+                u = Prompt.ask(f"\n[bold blue]You ({os.path.basename(os.getcwd())})[/]")
+                if not u: continue
+                if u.startswith("/"):
+                    if self.handle_slash_command(u): continue
+                self.history.append({"role": "user", "content": u})
+                self.run_stream()
+            except KeyboardInterrupt:
+                break                    try:
                         chunk = json.loads(data_str)
                         delta = chunk["choices"][0]["delta"]
                         

@@ -150,6 +150,7 @@ class PollyIDE:
                     args = json.loads(tool["function"]["arguments"])
                 except:
                     args = {}
+# ... внутри цикла обработки tool_calls ...
 
                 # АНИМАЦИЯ
                 spinner_text = f"Running {func_name}..."
@@ -158,18 +159,25 @@ class PollyIDE:
                     spinner_text = f"Writing file {path}..."
                 elif func_name == "read_file":
                     spinner_text = f"Reading file {args.get('path')}..."
-                elif func_name == "execute_command":
-                    spinner_text = f"Executing: {args.get('command')}"
-                elif func_name == "google_search":
-                    spinner_text = f"Searching Google..."
-
-                with console.status(f"[bold white]{spinner_text}[/]", spinner="dots"):
+                
+                # ДЛЯ КОМАНД МЫ НЕ ИСПОЛЬЗУЕМ СПИННЕР, 
+                # потому что команда сама пишет output в консоль в реальном времени
+                if func_name == "execute_command":
+                    console.print(f"[dim]🚀 Launching command: {args.get('command')}[/]")
                     if func_name == "google_search":
                         result = "Search results injected by backend."
                     else:
+                        # Тул сам обработает вывод и Ctrl+C
                         result = execute_local_tool(func_name, args)
-
-                console.print(f"[dim]🛠 {spinner_text} [green]Done.[/][/]")
+                
+                # Для остальных тулзов - спиннер
+                else:
+                    with console.status(f"[bold white]{spinner_text}[/]", spinner="dots"):
+                        if func_name == "google_search":
+                            result = "Search results injected by backend."
+                        else:
+                            result = execute_local_tool(func_name, args)
+                    console.print(f"[dim]🛠 {spinner_text} [green]Done.[/][/]")
 
                 self.history.append({
                     "role": "tool",

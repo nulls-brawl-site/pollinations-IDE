@@ -93,6 +93,7 @@ class PollyIDE:
         tool_buffer = []
         markdown_text = ""
         
+        # Индикатор ожидания ответа
         with Live(Panel("...", title=f"Polly ({self.cfg['model']})", border_style="blue"), refresh_per_second=10) as live:
             try:
                 response = stream_completion(payload, self.cfg["api_key"])
@@ -109,12 +110,14 @@ class PollyIDE:
                         chunk = json.loads(data_str)
                         delta = chunk["choices"][0]["delta"]
                         
+                        # Обработка текстового контента
                         if "content" in delta and delta["content"]:
                             txt = delta["content"]
                             full_content += txt
                             markdown_text += txt
                             live.update(Panel(Markdown(markdown_text), title=f"Polly ({self.cfg['model']})", border_style="blue"))
                         
+                        # Обработка вызовов инструментов
                         if "tool_calls" in delta:
                             t_calls = delta["tool_calls"]
                             for tc in t_calls:
@@ -137,22 +140,34 @@ class PollyIDE:
                 live.update(Panel(f"[red]Error: {e}[/]", title="Error"))
                 return
 
-        if full_content:
-            self.history.append({"role": "assistant", "content": full_content})
-
-        if tool_buffer:
-            self.history.append({"role": "assistant", "content": full_content, "tool_calls": tool_buffer})
+        # 1. Сначала добавляем сообщение ассистента в историю
+        if full_content or tool_buffer:
+            msg = {"role": "assistant"}
             
+            # --- ВАЖНОЕ ИСПРАВЛЕНИЕ ДЛЯ VERTEX AI / GEMINI ---
+            # Если tool_calls есть, а контента нет, нужно передавать None, а не пустую строку.
+            if full_content:
+                msg["content"] = full_content
+            else:
+                msg["content"] = None 
+
+            if tool_buffer:
+                msg["tool_calls"] = tool_buffer
+            
+            self.history.append(msg)
+
+        # 2. Если были вызовы инструментов, выполняем их и добавляем результаты
+        if tool_buffer:
             for tool in tool_buffer:
                 func_name = tool["function"]["name"]
                 call_id = tool["id"]
                 try:
                     args = json.loads(tool["function"]["arguments"])
-                except:
+                except Exception:
+                    # Если JSON битый
+                    console.print(f"[red]Error parsing arguments for {func_name}[/]")
                     args = {}
 
-                # --- ОБНОВЛЕННАЯ ЛОГИКА АНИМАЦИИ ---
-                
                 # Формируем текст для спиннера (для тех тулзов, где он нужен)
                 spinner_text = f"Running {func_name}..."
                 if func_name == "write_file":
@@ -164,21 +179,21 @@ class PollyIDE:
                     spinner_text = f"Searching Google..."
                 
                 # ДЛЯ КОМАНД МЫ НЕ ИСПОЛЬЗУЕМ СПИННЕР, 
-                # потому что команда сама пишет output в консоль в реальном времени
+                # чтобы видеть вывод (logs) в реальном времени из tools.py
                 if func_name == "execute_command":
                     console.print(f"[dim]🚀 Launching command: {args.get('command')}[/]")
-                    # Тул сам обработает вывод и Ctrl+C
                     result = execute_local_tool(func_name, args)
                 
                 # Для остальных тулзов - спиннер
                 else:
                     with console.status(f"[bold white]{spinner_text}[/]", spinner="dots"):
                         if func_name == "google_search":
-                            result = "Search results injected by backend."
+                            result = execute_local_tool(func_name, args)
                         else:
                             result = execute_local_tool(func_name, args)
                     console.print(f"[dim]🛠 {spinner_text} [green]Done.[/][/]")
 
+                # Добавляем результат тулза в историю
                 self.history.append({
                     "role": "tool",
                     "tool_call_id": call_id,
@@ -186,6 +201,7 @@ class PollyIDE:
                     "content": str(result)
                 })
             
+            # Рекурсивный вызов для получения ответа модели на результаты инструментов
             self.run_stream()
 
     def start(self):

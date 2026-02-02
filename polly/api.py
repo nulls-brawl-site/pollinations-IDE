@@ -1,3 +1,4 @@
+#nah i'd win☠️
 import requests
 import json
 from rich.console import Console

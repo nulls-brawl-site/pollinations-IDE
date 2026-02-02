@@ -27,7 +27,7 @@ class PollyIDE:
         except ValueError:
             parts = cmd_line.split()
             
-        base = parts[0].lower()
+        base = parts[0].lower() #added bug to script
         
         if base == "/reset":
             self.history = [{"role": "system", "content": self.cfg_mgr.get_system_prompt()}]

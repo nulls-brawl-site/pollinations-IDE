@@ -120,7 +120,7 @@ def execute_local_tool(name, args):
             items = os.listdir(path)
             items.sort()
             res = []
-            for item in items: # УБРАН ЛИМИТ [:100]
+            for item in items:
                 full = os.path.join(path, item)
                 mark = "📁" if os.path.isdir(full) else "📄"
                 res.append(f"{mark} {item}")
@@ -128,7 +128,7 @@ def execute_local_tool(name, args):
         
         elif name == "read_file":
             with open(args["path"], 'r', encoding='utf-8') as f:
-                return f.read() # УБРАН ЛИМИТ на чтение
+                return f.read()
         
         elif name == "write_file":
             p = args["path"]
@@ -168,9 +168,11 @@ def execute_local_tool(name, args):
             if is_bg:
                 console.print(f"[yellow]>> Starting in BACKGROUND mode (Monitoring for 10s)...[/]")
 
-            # Запускаем процесс
+            # ФИКС 1: Добавляем переменную окружения, чтобы Python не буферизировал вывод
+            env = os.environ.copy()
+            env["PYTHONUNBUFFERED"] = "1"
+
             try:
-                # Используем Popen для контроля
                 process = subprocess.Popen(
                     cmd, 
                     shell=True, 
@@ -178,50 +180,50 @@ def execute_local_tool(name, args):
                     stderr=subprocess.STDOUT, 
                     text=True, 
                     bufsize=1,
-                    preexec_fn=os.setsid # Создаем группу процессов (чтобы убивать все дерево)
+                    env=env, # <-- ВАЖНО
+                    preexec_fn=os.setsid 
                 )
             except Exception as e:
                 return f"Failed to start: {e}"
 
-            # Буфер для логов
             output_buffer = []
             
             # Если это фоновый процесс (сервер)
             if is_bg:
                 ACTIVE_PROCESSES[process.pid] = process
                 
-                # Запускаем поток чтения логов (чтобы не блокировать, но видеть начало)
-                # Читаем логи 10 секунд
-                start_time = time.time()
-                while time.time() - start_time < 10:
-                    line = process.stdout.readline()
-                    if not line: 
-                        if process.poll() is not None: break # Умер
-                        continue
-                    print(f"[BG] {line}", end='')
-                    output_buffer.append(line)
+                # ФИКС 2: Читаем в потоке, чтобы readline не блокировал таймер sleep
+                def bg_reader(proc, buffer):
+                    try:
+                        for line in iter(proc.stdout.readline, ''):
+                            if not line: break
+                            print(f"[BG] {line}", end='')
+                            buffer.append(line)
+                    except: pass
+
+                t = threading.Thread(target=bg_reader, args=(process, output_buffer), daemon=True)
+                t.start()
                 
-                # Проверка статуса
+                # Ждем 10 секунд накопления логов
+                time.sleep(10)
+                
                 if process.poll() is None:
                     return f"SUCCESS: Process started (PID {process.pid}) and is running.\nLogs so far:\n{''.join(output_buffer)}\n[Polly]: I will keep this running."
                 else:
                     return f"ERROR: Process started but crashed immediately (Code {process.returncode}).\nLogs:\n{''.join(output_buffer)}"
 
-            # Если это обычный процесс (установка, ls, скрипт)
+            # Если это обычный процесс
             else:
                 try:
-                    # Читаем вывод в реальном времени
                     for line in iter(process.stdout.readline, ''):
                         print(line, end='')
                         output_buffer.append(line)
                     
-                    process.wait() # Ждем завершения
+                    process.wait()
                     return "".join(output_buffer)
                 
                 except KeyboardInterrupt:
-                    # ОБРАБОТКА CTRL+C
                     console.print("\n[bold red]>> User interrupted command (SIGINT)[/]")
-                    # Убиваем группу процессов
                     os.killpg(os.getpgid(process.pid), signal.SIGTERM)
                     return f"Command interrupted by user.\nPartial Output:\n{''.join(output_buffer)}"
 

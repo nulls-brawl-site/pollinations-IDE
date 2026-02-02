@@ -23,14 +23,14 @@ MODELS_DB = {
     "mistral": {"name": "Mistral Small 3.2 24B", "caps": [], "tier": TIER_FREE, "desc": "General Purpose"},
     "grok": {"name": "xAI Grok 4 Fast", "caps": [], "tier": TIER_FREE, "desc": "Fast Text"},
     "nova-fast": {"name": "Amazon Nova Micro", "caps": [], "tier": TIER_FREE, "desc": "Micro Model"},
-    
+
     # --- GOOGLE GEMINI ---
     "gemini-fast": {"name": "Gemini 2.5 Flash Lite", "caps": [CAP_VISION, CAP_SEARCH, CAP_CODE], "tier": TIER_FREE, "desc": "Fast with Search"},
     "gemini-search": {"name": "Gemini 3 Flash (Search)", "caps": [CAP_VISION, CAP_SEARCH, CAP_CODE], "tier": TIER_FREE, "desc": "Optimized for Search"},
     "gemini": {"name": "Gemini 3 Flash", "caps": [CAP_VISION, CAP_AUDIO, CAP_SEARCH, CAP_CODE], "tier": TIER_FREE, "desc": "Balanced"},
     "gemini-large": {"name": "Gemini 3 Pro", "caps": [CAP_VISION, CAP_AUDIO, CAP_REASONING, CAP_SEARCH], "tier": TIER_PAID, "desc": "PAID ONLY"},
     "gemini-legacy": {"name": "Gemini 2.5 Pro", "caps": [CAP_VISION, CAP_AUDIO, CAP_REASONING, CAP_SEARCH, CAP_CODE], "tier": TIER_PAID, "desc": "PAID ONLY"},
-    
+
     # --- ANTHROPIC CLAUDE ---
     "claude-fast": {"name": "Claude Haiku 4.5", "caps": [CAP_VISION], "tier": TIER_FREE, "desc": "Fastest Claude"},
     "claude": {"name": "Claude Sonnet 4.5", "caps": [CAP_VISION], "tier": TIER_FREE, "desc": "Intelligent Coding"},
@@ -50,22 +50,31 @@ MODELS_DB = {
     "midijourney": {"name": "MIDIjourney", "caps": [], "tier": TIER_FREE, "desc": "Music Generation"},
 }
 
+def supports_search(model_name):
+    """
+    Проверяет, поддерживает ли указанная модель веб-поиск.
+    Используется в tools.py для фильтрации доступных инструментов.
+    """
+    if model_name not in MODELS_DB:
+        return False
+    return CAP_SEARCH in MODELS_DB[model_name]["caps"]
+
 def list_models_table():
     table = Table(title="🤖 Polly Models (Pollinations API)", box=box.ROUNDED)
     table.add_column("ID", style="cyan bold")
     table.add_column("Name", style="green")
     table.add_column("Caps", style="magenta")
     table.add_column("Tier", style="yellow")
-    
+
     for mid, info in MODELS_DB.items():
         caps = []
         if CAP_SEARCH in info["caps"]: caps.append("🔍")
-        if CAP_REASONING in info["caps"]: caps.append("🧠")
+        if CAP_REASONING in info["caps"]: caps.append(" 🧠")
         if CAP_CODE in info["caps"]: caps.append("💻")
         if CAP_VISION in info["caps"]: caps.append("👁️")
         if CAP_AUDIO in info["caps"]: caps.append("🎙️")
-        
-        tier = "💎" if info["tier"] == TIER_PAID else "🆓"
+
+        tier = "💎" if info["tier"] == TIER_PAID else " 🆓"
         table.add_row(mid, info["name"], " ".join(caps), tier)
-    
+
     console.print(table)

@@ -57,6 +57,24 @@ class ConfigManager:
         data[key] = value
         self.save(data)
 
+    def get_api_config(self):
+        data = self.load()
+        active = data.get("active_provider")
+        providers = data.get("providers", {})
+
+        if active and active in providers:
+            p = providers[active]
+            return {
+                "url": p.get("url", ""),
+                "key": p.get("key", data.get("api_key")),
+                "name": active,
+            }
+        return {
+            "url": "gen.pollinations.ai",
+            "key": data.get("api_key"),
+            "name": "pollinations",
+        }
+
     def get_system_prompt(self):
         data = self.load()
         if data.get("custom_prompt_path"):

@@ -6,41 +6,25 @@ from rich.panel import Panel
 from rich.markdown import Markdown
 from rich.prompt import Prompt
 from rich.live import Live
-from rich.table import Table
-from rich.syntax import Syntax
 from rich.text import Text
-from rich import box
 
 from .config import ConfigManager
 from .api import create_payload, stream_completion, get_api_config
 from .tools import execute_local_tool
 from .utils import upgrade_polly
 from .models import list_models_table
+from . import tui
 
 console = Console()
-
-POLLY_BANNER = """
-[bold yellow]  ____        _ _ _       _       _             _____ _    ___ 
- |  _ \\ ___  | | (_)_ __ (_)_ __ (_)_ _  __ _ / __| | |  |_ _|
- | |_) / _ \\ | | | | '_ \\| | '_ \\| | ' \\/ _` | (__| |_|  | | 
- |  __/ (_) || | | | | | | | | | | | | | (_| |\\__ \\  _|  | | 
- |_|   \\___/ |_|_|_|_| |_|_|_| |_|/ |_|\\__,_||___/_|\\_\\ |___|
-                               |__/
-[/]
-[bold cyan]Pollinations CLI v3.0[/] [dim]AI-powered terminal assistant[/]"""
 
 class PollyIDE:
     def __init__(self):
         self.cfg_mgr = ConfigManager()
         self.cfg = self.cfg_mgr.load()
         self.history = [{"role": "system", "content": self.cfg_mgr.get_system_prompt()}]
-        self._last_md = ""
 
-    def _provider_badge(self):
-        api = get_api_config(self.cfg)
-        if api["name"] == "pollinations":
-            return "[dim yellow]pollinations[/]"
-        return f"[bold magenta]{api['name']}[/]"
+    def _reload_config(self):
+        self.cfg = self.cfg_mgr.load()
 
     def handle_slash_command(self, cmd_line):
         try:
@@ -52,7 +36,7 @@ class PollyIDE:
 
         if base == "/reset":
             self.history = [{"role": "system", "content": self.cfg_mgr.get_system_prompt()}]
-            console.print("[yellow]Context cleared.[/]")
+            tui.success("Context cleared")
             return True
 
         elif base == "/upgrade" or base == "/update":
@@ -60,30 +44,28 @@ class PollyIDE:
             return True
 
         elif base == "/models":
-            list_models_table()
+            self._interactive_models()
             return True
 
         elif base == "/config":
-            safe = {k: v for k, v in self.cfg.items() if k not in ("providers",)}
-            safe["providers_count"] = len(self.cfg.get("providers", {}))
-            safe["active_provider"] = self.cfg.get("active_provider") or "pollinations"
-            console.print(Panel(json.dumps(safe, indent=2), title="[bold]Config[/]", border_style="cyan"))
+            self._show_config()
             return True
 
         elif base == "/providers":
-            return self._handle_providers(parts)
+            self._interactive_providers()
+            return True
 
         elif base == "/prompt":
             if len(parts) < 2:
-                console.print("[red]Usage: /prompt /path/to/custom_prompt.txt[/]")
+                tui.error("Usage: /prompt /path/to/custom_prompt.txt")
                 return True
             path = parts[1]
             if os.path.exists(path):
                 self.cfg_mgr.update("custom_prompt_path", os.path.abspath(path))
                 self.history = [{"role": "system", "content": self.cfg_mgr.get_system_prompt()}]
-                console.print(f"[green]System prompt loaded from {path}. Memory reset.[/]")
+                tui.success(f"System prompt loaded from {path}. Memory reset.")
             else:
-                console.print(f"[red]File not found: {path}[/]")
+                tui.error(f"File not found: {path}")
             return True
 
         elif base == "/google":
@@ -92,8 +74,8 @@ class PollyIDE:
                 return True
             val = parts[1].lower() in ("on", "true", "1", "yes")
             self.cfg_mgr.update("google_search", val)
-            self.cfg = self.cfg_mgr.load()
-            console.print(f"[green]Google Search: {val}[/]")
+            self._reload_config()
+            tui.success(f"Google Search: {val}")
             return True
 
         elif base == "/reasoning":
@@ -102,8 +84,8 @@ class PollyIDE:
                 return True
             val = parts[1].lower() in ("on", "true", "1", "yes")
             self.cfg_mgr.update("reasoning", val)
-            self.cfg = self.cfg_mgr.load()
-            console.print(f"[green]Reasoning: {val}[/]")
+            self._reload_config()
+            tui.success(f"Reasoning: {val}")
             return True
 
         elif base == "/api":
@@ -114,8 +96,8 @@ class PollyIDE:
                 console.print(f"[dim]API Key: {masked or 'not set'}[/]")
                 return True
             self.cfg_mgr.update("api_key", parts[1])
-            self.cfg = self.cfg_mgr.load()
-            console.print("[green]API Key saved.[/]")
+            self._reload_config()
+            tui.success("API Key saved")
             return True
 
         elif base == "/model":
@@ -123,8 +105,8 @@ class PollyIDE:
                 console.print(f"[dim]Model: {self.cfg.get('model', 'claude')}[/]")
                 return True
             self.cfg_mgr.update("model", parts[1])
-            self.cfg = self.cfg_mgr.load()
-            console.print(f"[green]Model: {parts[1]}[/]")
+            self._reload_config()
+            tui.success(f"Model: {parts[1]}")
             return True
 
         elif base == "/help":
@@ -137,104 +119,99 @@ class PollyIDE:
 
         return False
 
-    def _handle_providers(self, parts):
-        sub = parts[1].lower() if len(parts) > 1 else "list"
-
-        if sub == "list":
+    def _interactive_providers(self):
+        while True:
+            self._reload_config()
             providers = self.cfg.get("providers", {})
             active = self.cfg.get("active_provider")
-            if not providers:
-                console.print("[dim]No custom providers configured. Add one with /providers add[/]")
-                return True
+            has_key = bool(self.cfg.get("api_key"))
 
-            table = Table(title="[bold]Custom Providers[/]", box=box.ROUNDED, border_style="magenta")
-            table.add_column("Name", style="cyan bold")
-            table.add_column("URL", style="dim")
-            table.add_column("Status", style="green")
-            for name, p in providers.items():
-                marker = " [bold yellow]ACTIVE[/]" if name == active else ""
-                table.add_row(name, p.get("url", "")[:50], f"[green]ready{marker}[/]")
-            console.print(table)
-            return True
+            choice = tui.provider_dashboard(providers, active, has_key)
 
-        elif sub == "add":
-            if len(parts) < 4:
-                console.print("[red]Usage: /providers add <name> <url> <api_key>[/]")
-                console.print("[dim]Example: /providers add openai https://api.openai.com/v1/chat/completions sk-xxx[/]")
-                return True
-            name = parts[2]
-            url = parts[3]
-            key = parts[4] if len(parts) > 4 else ""
-            providers = dict(self.cfg.get("providers", {}))
-            providers[name] = {"url": url, "key": key}
-            self.cfg_mgr.update("providers", providers)
-            self.cfg = self.cfg_mgr.load()
-            console.print(f"[green]Provider [bold]{name}[/] added.[/]")
-            return True
+            if choice == "Add Provider":
+                name, url, key = tui.add_provider_wizard()
+                if name and url:
+                    providers = dict(self.cfg.get("providers", {}))
+                    providers[name] = {"url": url, "key": key}
+                    self.cfg_mgr.update("providers", providers)
 
-        elif sub == "use":
-            if len(parts) < 3:
-                console.print("[red]Usage: /providers use <name>[/]")
-                return True
-            name = parts[2]
-            if name == "pollinations":
-                self.cfg_mgr.update("active_provider", None)
-                self.cfg = self.cfg_mgr.load()
-                console.print("[green]Switched to default Pollinations API.[/]")
-                return True
-            providers = self.cfg.get("providers", {})
-            if name not in providers:
-                console.print(f"[red]Provider '{name}' not found. Add it with /providers add[/]")
-                return True
-            self.cfg_mgr.update("active_provider", name)
-            self.cfg = self.cfg_mgr.load()
-            console.print(f"[green]Switched to provider [bold]{name}[/].[/]")
-            return True
+            elif choice == "Switch Provider":
+                sel = tui.switch_provider_dialog(providers, active, has_key)
+                if sel:
+                    if sel == "pollinations":
+                        self.cfg_mgr.update("active_provider", None)
+                        tui.success("Switched to Pollinations API")
+                    else:
+                        self.cfg_mgr.update("active_provider", sel)
+                        tui.success(f"Switched to {sel}")
+                    tui.confirm("Press Enter to continue", default=True)
 
-        elif sub == "rm" or sub == "remove":
-            if len(parts) < 3:
-                console.print("[red]Usage: /providers rm <name>[/]")
-                return True
-            name = parts[2]
-            providers = dict(self.cfg.get("providers", {}))
-            if name not in providers:
-                console.print(f"[red]Provider '{name}' not found.[/]")
-                return True
-            del providers[name]
-            active = self.cfg.get("active_provider")
-            if active == name:
-                self.cfg_mgr.update("active_provider", None)
-            self.cfg_mgr.update("providers", providers)
-            self.cfg = self.cfg_mgr.load()
-            console.print(f"[yellow]Provider [bold]{name}[/] removed.[/]")
-            return True
+            elif choice == "Remove Provider":
+                name = tui.remove_provider_dialog(providers)
+                if name:
+                    providers = dict(self.cfg.get("providers", {}))
+                    del providers[name]
+                    if active == name:
+                        self.cfg_mgr.update("active_provider", None)
+                    self.cfg_mgr.update("providers", providers)
+                    tui.success(f"Removed {name}")
 
-        else:
-            console.print("[red]Unknown subcommand. Use: list | add | use | rm[/]")
-            return True
+            elif choice == "Default (Pollinations)":
+                if tui.confirm("Switch to default Pollinations API?", default=True):
+                    self.cfg_mgr.update("active_provider", None)
+                    tui.success("Switched to Pollinations API")
+
+            elif choice == "Back":
+                break
+
+    def _interactive_models(self):
+        self._reload_config()
+        current = self.cfg.get("model", "claude")
+        new_model = tui.model_selector(current, self.cfg)
+        if new_model and new_model != current:
+            self.cfg_mgr.update("model", new_model)
+            self._reload_config()
+            tui.success(f"Model set to: [bold cyan]{new_model}[/]")
+
+    def _show_config(self):
+        tui.clear()
+        tui.console.print(tui.WELCOME_ART)
+        tui.console.print("[bold #eab308]  Configuration[/]\n")
+        safe = {k: v for k, v in self.cfg.items() if k not in ("providers",)}
+        safe["providers_count"] = len(self.cfg.get("providers", {}))
+        safe["active_provider"] = self.cfg.get("active_provider") or "pollinations"
+        console.print(Panel(json.dumps(safe, indent=2), title="[bold]Config[/]", border_style="cyan"))
+        tui.Prompt.ask("[dim]Press Enter to continue[/]", default="")
 
     def _show_help(self):
-        t = Table(title="[bold]Pollinations CLI Commands[/]", box=box.ROUNDED, border_style="cyan")
-        t.add_column("Command", style="bold yellow")
-        t.add_column("Description", style="dim")
-        t.add_column("Usage", style="cyan")
+        tui.clear()
+        tui.console.print(tui.WELCOME_ART)
+        tui.console.print("[bold #eab308]  Commands[/]\n")
 
         cmds = [
-            ("/model", "Select AI model", "/model claude"),
-            ("/models", "List all available models", "/models"),
-            ("/api", "Set Pollinations API key", "/api sk-xxx"),
-            ("/providers", "Manage custom OpenAI v1 providers", "/providers add|list|use|rm"),
-            ("/google", "Toggle Google search tool", "/google on"),
-            ("/reasoning", "Toggle reasoning/thinking", "/reasoning on"),
-            ("/prompt", "Load custom system prompt", "/prompt ~/prompt.txt"),
-            ("/config", "Show current configuration", "/config"),
-            ("/reset", "Clear conversation context", "/reset"),
-            ("/upgrade", "Update to latest version", "/upgrade"),
-            ("/exit", "Exit Polly", "/exit"),
+            ("/model <id>", "Select AI model"),
+            ("/models", "Interactive model selector"),
+            ("/api <key>", "Set Pollinations API key"),
+            ("/providers", "Manage custom API providers"),
+            ("/google on|off", "Toggle Google search tool"),
+            ("/reasoning on|off", "Toggle reasoning/thinking"),
+            ("/prompt <path>", "Load custom system prompt"),
+            ("/config", "Show configuration"),
+            ("/reset", "Clear conversation context"),
+            ("/upgrade", "Update to latest version"),
+            ("/help", "Show this help"),
+            ("/exit", "Exit"),
         ]
-        for cmd, desc, usage in cmds:
-            t.add_row(cmd, desc, usage)
-        console.print(t)
+
+        from rich.table import Table
+        from rich import box
+        table = Table(box=box.SIMPLE, border_style="dim cyan")
+        table.add_column("Command", style="bold yellow")
+        table.add_column("Description", style="dim")
+        for cmd, desc in cmds:
+            table.add_row(cmd, desc)
+        console.print(table)
+        tui.Prompt.ask("[dim]Press Enter to continue[/]", default="")
 
     def run_stream(self):
         payload = create_payload(self.cfg["model"], self.history, self.cfg)
@@ -300,10 +277,8 @@ class PollyIDE:
                 msg["content"] = full_content
             else:
                 msg["content"] = None
-
             if tool_buffer:
                 msg["tool_calls"] = tool_buffer
-
             self.history.append(msg)
 
         if tool_buffer:
@@ -342,17 +317,22 @@ class PollyIDE:
             self.run_stream()
 
     def start(self):
-        console.clear()
-        console.print(POLLY_BANNER)
-        api = get_api_config(self.cfg)
-        provider_str = f" @ [bold magenta]{api['name']}[/]" if api['name'] != 'pollinations' else ""
-        console.print(f"[dim]Model: {self.cfg['model']}{provider_str} | Reasoning: {self.cfg['reasoning']} | Google: {self.cfg.get('google_search', False)}[/]")
-        console.print(f"[dim]Type /help for commands | /exit to quit[/]\n")
+        tui.clear()
+        tui.console.print(tui.WELCOME_ART)
+
+        api = self.cfg_mgr.get_api_config()
+        provider_str = f" [bold magenta]@{api['name']}[/]" if api['name'] != 'pollinations' else ""
+        tui.console.print(
+            f"[dim]Model: {self.cfg['model']}{provider_str}  "
+            f"Reasoning: {'[green]ON[/]' if self.cfg['reasoning'] else 'OFF'}  "
+            f"Google: {'[green]ON[/]' if self.cfg.get('google_search') else 'OFF'}[/]"
+        )
+        tui.console.print("[dim]Type your request, /help for commands, /exit to quit[/]\n")
 
         while True:
             try:
                 cwd = os.path.basename(os.getcwd())
-                prompt_str = f"[bold blue]{cwd}[/] [bold white]>[/] "
+                prompt_str = f"[bold blue]{cwd}[/] [bold #eab308]>[/] "
                 u = Prompt.ask(prompt_str)
                 if not u.strip():
                     continue
@@ -361,9 +341,10 @@ class PollyIDE:
                     if handled:
                         continue
                 self.history.append({"role": "user", "content": u})
+                tui.console.print()
                 self.run_stream()
             except KeyboardInterrupt:
-                console.print("\n[dim]Exit with /exit or Ctrl+D[/]")
+                tui.console.print("\n[dim]Press Ctrl+C again or type /exit[/]")
             except EOFError:
-                console.print("\n[dim]Goodbye![/]")
+                tui.console.print("\n[dim]Goodbye![/]")
                 break

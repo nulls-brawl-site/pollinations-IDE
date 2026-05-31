@@ -10,24 +10,19 @@ from .models import list_models_table
 console = Console()
 
 def main():
-    parser = argparse.ArgumentParser(description="Polly - AI IDE CLI")
+    parser = argparse.ArgumentParser(description="Pollinations CLI - AI-powered terminal assistant")
     subparsers = parser.add_subparsers(dest="command", help="Available commands")
 
-    subparsers.add_parser("config", help="Configure Polly")
-    subparsers.add_parser("models", help="List available models")
-    subparsers.add_parser("upgrade", help="Force update Polly")
+    subparsers.add_parser("config", help="Show configuration")
+    subparsers.add_parser("models", help="List available AI models")
+    subparsers.add_parser("upgrade", help="Update to latest version")
     subparsers.add_parser("reset", help="Reset all settings")
-    subparsers.add_parser("help", help="Show this help message")
-    
-    p_parser = subparsers.add_parser("prompt", help="Set custom system prompt file")
+
+    p_parser = subparsers.add_parser("prompt", help="Set custom system prompt")
     p_parser.add_argument("path", help="Path to prompt.txt")
 
     args, unknown = parser.parse_known_args()
     mgr = ConfigManager()
-
-    if args.command == "help":
-        parser.print_help()
-        return
 
     if args.command == "models":
         list_models_table()
@@ -38,9 +33,9 @@ def main():
         return
 
     if args.command == "reset":
-        console.print("[yellow]Please use /reset inside the app or delete ~/.polly[/]")
+        console.print("[yellow]Use /reset inside the app, or delete ~/.pollinations[/]")
         return
-    
+
     if args.command == "prompt":
         if os.path.exists(args.path):
             mgr.update("custom_prompt_path", os.path.abspath(args.path))
@@ -52,7 +47,6 @@ def main():
     ide = PollyIDE()
     if unknown:
         msg = " ".join(unknown)
-        console.print(f"[bold blue]You:[/] {msg}")
         ide.history.append({"role": "user", "content": msg})
         ide.run_stream()
     else:
